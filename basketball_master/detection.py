@@ -7,8 +7,9 @@ import cv2
 import numpy as np
 
 from .media import Cancelled, frames, read_image
-from .project import ROOT, uid, valid_rect
+from .project import ROOT, active_hoops, uid, valid_rect
 from .region import RegionDetector
+from .ball_verifier import BallVerifier
 
 
 class HoopTracker:
@@ -98,11 +99,12 @@ class HoopTracker:
 
 def scan_goals(project, start, end, cancel, progress, event_callback=None):
     info, events = project["info"], []
-    hoops = project["hoops"]
+    mode = project["settings"].get("sensitivity", "region")
+    hoops = active_hoops(project, mode)
     if not hoops:
-        raise ValueError("请先框选篮球检测区域")
+        raise ValueError("请先框选篮板区域" if mode == "region" else "请先框选篮圈与篮网")
     fps = project["settings"].get("fps", 20)
-    if project["settings"].get("sensitivity") == "region":
+    if mode == "region":
         return scan_regions(project, start, end, cancel, progress, event_callback)
     for hi, hoop in enumerate(hoops):
         if cancel.is_set():
@@ -145,7 +147,8 @@ def scan_goals(project, start, end, cancel, progress, event_callback=None):
             if found and found["time"] >= start:
                 # 向上运动仅作为待复核线索，默认不勾选导出，不能直接认定为得分。
                 found.update({"id": uid(), "hoop": hoop["id"], "hoop_rect": [x, y, w, h], "goal": "pending",
-                              "player": "unknown", "player_score": None, "selected": found["direction"] != "up"})
+                              "hoop_kind": "rim", "player": "unknown", "player_score": None,
+                              "selected": found["direction"] != "up"})
                 found["trajectory"] = [[p[0], p[1]+left, p[2]+top] for p in found["trajectory"]]
                 events.append(found)
                 if event_callback:
@@ -157,20 +160,29 @@ def scan_goals(project, start, end, cancel, progress, event_callback=None):
 
 def scan_regions(project, start, end, cancel, progress, event_callback=None):
     info, events = project["info"], []
-    hoops, fps = project["hoops"], project["settings"].get("fps", 20)
+    hoops, fps = active_hoops(project, "region"), project["settings"].get("fps", 20)
+    if cancel.is_set():
+        raise Cancelled()
+    if not hoops:
+        raise ValueError("请先框选篮板区域")
+    verifier = BallVerifier()
+    verifier.ensure_ready()
     for hi, hoop in enumerate(hoops):
         if cancel.is_set():
             raise Cancelled()
         rect = valid_rect(hoop["rect"], info["width"], info["height"])
-        detector = RegionDetector(rect, info["width"], info["height"], fps)
+        detector = RegionDetector(rect, info["width"], info["height"], fps, verifier=verifier)
         for index, (t, frame) in enumerate(frames(project["source"], max(0, start-1.5), end, fps,
                                                  crop=detector.crop, cancel=cancel)):
             if cancel.is_set():
                 raise Cancelled()
             found = detector.update(t, frame)
+            if cancel.is_set():
+                raise Cancelled()
             if found and start <= found["time"] < end:
                 found.update({"id": uid(), "hoop": hoop["id"], "hoop_rect": rect, "goal": "pending",
-                              "player": "unknown", "player_score": None, "selected": True})
+                              "hoop_kind": "region", "player": "unknown", "player_score": None,
+                              "selected": found.get("selected", True)})
                 events.append(found)
                 if event_callback:
                     event_callback(found)

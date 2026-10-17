@@ -22,8 +22,8 @@ def test_real_motion_pipeline_respects_upward_setting(monkeypatch, enabled):
 
     monkeypatch.setattr(detection, "frames", moving_ball)
     project = {"source": "synthetic", "info": {"width": 200, "height": 200},
-               "hoops": [{"id": "hoop", "rect": [100, 100, 50, 30]}],
-               "settings": {"fps": 20, "detect_upward": enabled}}
+               "hoops": [{"id": "hoop", "rect": [100, 100, 50, 30], "kind": "rim"}],
+               "settings": {"fps": 20, "sensitivity": "balanced", "detect_upward": enabled}}
     events = detection.scan_goals(project, 0, 3, threading.Event(), lambda *args: None)
     if enabled:
         assert len(events) == 1 and events[0]["direction"] == "up"
@@ -35,7 +35,7 @@ def test_real_motion_pipeline_respects_upward_setting(monkeypatch, enabled):
 def candidate(direction, time=20):
     return {"id": f"{direction}-{time}", "time": time, "hoop": "hoop", "hoop_rect": [60, 20, 12, 8],
             "goal": "pending", "player": "unknown", "selected": direction == "down", "direction": direction,
-            "evidence": 80, "trajectory": [], "reason": "test"}
+            "evidence": 80, "trajectory": [[19.8+i*.05, 60+i, 40] for i in range(10)], "reason": "test"}
 
 
 def test_direction_aware_dedup_preserves_review_and_separate_crossings(window):
@@ -51,6 +51,19 @@ def test_direction_aware_dedup_preserves_review_and_separate_crossings(window):
     assert window.table.columnCount() == 6
     assert window.table.item(0, 5).text() == "从下向上"
     assert window.table.item(1, 5).text() == "从上向下"
+
+
+def test_region_rescan_updates_model_evidence_without_overwriting_manual_review(window):
+    old = candidate("region")
+    old.update(goal="made", player="target", player_manual=True, selected=False, start=15, end=25)
+    window.project["events"] = [old]
+    incoming = candidate("region", 20.1)
+    incoming.update(verification="ball-track-v1", ball_score=.78)
+    window.add_found_event(incoming)
+    assert len(window.project["events"]) == 1
+    assert old["verification"] == "ball-track-v1" and old["ball_score"] == .78
+    assert (old["time"], old["goal"], old["player"], old["selected"], old["start"], old["end"]) == (
+        20, "made", "target", False, 15, 25)
 
 
 @pytest.mark.parametrize("enabled", [True, False])

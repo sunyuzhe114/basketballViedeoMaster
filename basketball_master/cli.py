@@ -9,6 +9,7 @@ from .detection import PlayerAnalyzer, scan_goals
 from .exporter import export_highlights
 from .media import probe
 from .project import DATA, apply_player_result, load_project, save_project
+from .event_identity import matching_candidate
 
 
 def main():
@@ -31,9 +32,7 @@ def main():
             last[0] = time.monotonic()
 
     def item(event):
-        previous = next((e for e in project["events"] if e["hoop"] == event["hoop"]
-                         and e.get("direction", "down") == event.get("direction", "down")
-                         and abs(e["time"]-event["time"]) < 1.5), None)
+        previous = matching_candidate(project["events"], event)
         if previous is None:
             project["events"].append(event)
             project["events"].sort(key=lambda e: e["time"])

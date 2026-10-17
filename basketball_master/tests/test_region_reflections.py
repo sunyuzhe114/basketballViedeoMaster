@@ -7,10 +7,11 @@ import pytest
 from basketball_master.media import frames
 from basketball_master.project import ROOT
 from basketball_master.region import RegionDetector, RegionTracker
+from basketball_master.tests.test_region_detection import AcceptBallVerifier
 
 
 def sequence(kind):
-    detector = RegionDetector([100, 80, 60, 60], 300, 200)
+    detector = RegionDetector([100, 80, 60, 60], 300, 200, verifier=AcceptBallVerifier())
     _, _, width, height = detector.crop
     x, y, _, h = detector.local_rect
     yy, xx = np.indices((height, width))
@@ -70,8 +71,9 @@ def test_background_residual_without_adjacent_frame_motion_is_rejected():
 def test_previous_solid_ball_supports_mixed_current_frame_but_requires_motion():
     for moving in (True, False):
         tracker = RegionTracker([100, 100, 50, 50])
-        assert tracker.update(0, [(85, 120, 5, .7)], [True], [True]) is None
-        event = tracker.update(.05, [(96, 120, 5, .7)], [False], [moving])
+        assert tracker.update(0, [(75, 120, 5, .7)], [True], [True]) is None
+        assert tracker.update(.05, [(85, 120, 5, .7)], [True], [True]) is None
+        event = tracker.update(.1, [(96, 120, 5, .7)], [False], [moving])
         assert (event is not None) == moving
 
 

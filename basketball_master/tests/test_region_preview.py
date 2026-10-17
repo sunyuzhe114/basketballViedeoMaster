@@ -9,6 +9,7 @@ from basketball_master import app as desktop
 from basketball_master.preview import RegionPreview
 from basketball_master.region import flash_color
 from basketball_master.tests.test_list_actions import qapp, window
+from basketball_master.tests.test_region_detection import AcceptBallVerifier
 
 
 def test_flash_alternates_with_video_time_and_expires():
@@ -48,7 +49,7 @@ def test_recorded_region_hit_replays_after_seek_and_matches_only_its_region():
 def test_live_detection_flashes_without_changing_frame_or_events():
     import cv2
 
-    preview = RegionPreview()
+    preview = RegionPreview(verifier=AcceptBallVerifier())
     hoops = [{"id": "a", "rect": [70, 30, 50, 40]}]
     colors = []
     for index in range(50):

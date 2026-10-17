@@ -14,6 +14,17 @@ def uid():
     return uuid.uuid4().hex[:12]
 
 
+def calibration_kind(sensitivity):
+    return "region" if sensitivity == "region" else "rim"
+
+
+def active_hoops(project, sensitivity=None):
+    mode = project.get("settings", {}).get("sensitivity", "region") if sensitivity is None else sensitivity
+    # 旧框仅沿用为区域，不能根据后来保存的检测方式推断成篮圈。
+    return [hoop for hoop in project["hoops"]
+            if hoop.get("kind", "region") == calibration_kind(mode)]
+
+
 def project_path(source):
     source = Path(source).resolve()
     # 使用不区分大小写的完整路径，区分不同文件夹中的同名视频。

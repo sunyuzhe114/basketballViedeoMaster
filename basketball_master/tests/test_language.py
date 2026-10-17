@@ -233,7 +233,7 @@ def test_save_language_updates_ui_without_changing_review_state(window, monkeypa
     window.open_settings()
     assert window.windowTitle() == "Basketball Clip Master"
     assert window.settings_btn.text() == "Settings"
-    assert window.sensitivity.currentText() == "Relaxed (region)"
+    assert window.sensitivity.currentText() == "Backboard entry (relaxed)"
     assert window.table.horizontalHeaderItem(2).text() == "Shot status"
     assert window.table.item(0, 2).text() == "Made"
     assert window.project["source"] == source and window.project["events"] == events and window.project["hoops"] == hoops

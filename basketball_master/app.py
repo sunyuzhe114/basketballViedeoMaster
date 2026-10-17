@@ -18,13 +18,16 @@ from PyQt5.QtWidgets import (
 
 from .candidate_table import COLUMNS, CandidateHeader, CandidateView, ColumnFilterDialog
 from .detection import PlayerAnalyzer, scan_goals
+from .event_identity import matching_candidate
 from .export_dialog import ExportFilterDialog
 from .exporter import GOAL_STATES, PLAYER_STATES, export_highlights, filter_export_events
+from .help_dialog import HelpDialog
+from .guided_tour import GuidedTour
 from .i18n import Localizer
 from .media import Cancelled, probe, read_image, write_image
 from .preferences import load_preferences, save_preferences
 from .preview import RegionPreview
-from .project import DATA, ROOT, apply_player_result, clip_range, load_project, merged_ranges, save_project, timestamp, uid, valid_rect
+from .project import DATA, ROOT, active_hoops, apply_player_result, calibration_kind, clip_range, load_project, merged_ranges, save_project, timestamp, uid, valid_rect
 from .settings_dialog import SettingsDialog
 
 
@@ -91,6 +94,7 @@ class VideoCanvas(QWidget):
         self.setMouseTracking(True)
         self.pixmap = None
         self.rects = []
+        self.calibration_kind = "region"
         self.region_colors = {}
         self.mode = None
         self.begin = None
@@ -205,7 +209,7 @@ class VideoCanvas(QWidget):
             color = self.region_colors[index] if flashing else "#52e39a"
             painter.setPen(QPen(QColor(color), 3 if flashing else 2))
             painter.drawRect(mapped)
-            caption = self.i18n.tr("篮筐 {number}", number=index+1)
+            caption = self.i18n.tr("篮板区域 {number}" if self.calibration_kind == "region" else "篮圈 {number}", number=index+1)
             caption_width = max(76, painter.fontMetrics().horizontalAdvance(caption)+8)
             painter.fillRect(QRectF(mapped.x(), mapped.y()-23, caption_width, 23), QColor("#16452f"))
             painter.setPen(Qt.white)
@@ -351,7 +355,7 @@ class MainWindow(QMainWindow):
         self.updating = False
         self.preview_end = None
         self.classify_after_scan = False
-        self.preview_regions = RegionPreview()
+        self.preview_regions = RegionPreview(asynchronous=True)
         self.play_timer = QTimer(self)
         self.play_timer.timeout.connect(self.play_tick)
         self.build_ui()
@@ -389,6 +393,10 @@ class MainWindow(QMainWindow):
         self.settings_btn = button("设置", self.open_settings)
         self.settings_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
         header.addWidget(self.settings_btn)
+        self.help_btn = button("帮助", self.open_help)
+        self.help_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogHelpButton))
+        self.help_btn.setToolTip("使用帮助")
+        header.addWidget(self.help_btn)
         header.addWidget(self.icon_button(QStyle.SP_DialogSaveButton, "保存项目", self.persist))
         layout.addLayout(header)
         splitter = QSplitter(Qt.Horizontal)
@@ -450,8 +458,7 @@ class MainWindow(QMainWindow):
         toolbar = QHBoxLayout()
         self.source_title = label("视频预览")
         toolbar.addWidget(self.source_title, 1)
-        self.hoop_btn = button("框选篮筐", lambda: self.set_selection("hoop"))
-        self.hoop_btn.setToolTip("区域触发可框选篮板附近；标准/严格模式需紧贴篮圈与篮网；支持多个区域")
+        self.hoop_btn = button("框选篮板区域", lambda: self.set_selection("hoop"))
         toolbar.addWidget(self.hoop_btn)
         self.undo_hoop_btn = self.icon_button(QStyle.SP_ArrowBack, "删除最后一个篮筐", self.remove_hoop)
         toolbar.addWidget(self.undo_hoop_btn)
@@ -558,12 +565,13 @@ class MainWindow(QMainWindow):
         form.addRow("开始", self.range_start)
         form.addRow("结束", self.range_end)
         self.sensitivity = QComboBox()
-        self.sensitivity.addItem("区域触发（宽松）", "region")
-        self.sensitivity.addItem("标准", "balanced")
-        self.sensitivity.addItem("严格", "strict")
-        self.sensitivity.setToolTip("区域触发只检查疑似篮球进入选区，不限制方向；标准/严格检查穿越篮筐的轨迹")
+        self.sensitivity.addItem("篮板区域进入（宽松）", "region")
+        self.sensitivity.addItem("篮圈穿越（标准）", "balanced")
+        self.sensitivity.addItem("篮圈穿越（严格）", "strict")
+        self.sensitivity.setToolTip("篮板区域与篮圈独立标定；进入区域不代表确认进球")
         self.sensitivity.currentIndexChanged.connect(self.detection_mode_changed)
-        form.addRow("检测方式", self.sensitivity)
+        form.addRow(label("检测方式"))
+        form.addRow(self.sensitivity)
         panel.addLayout(form)
         self.test_btn = button("从当前时间试跑 1 分钟", self.test_scan)
         panel.addWidget(self.test_btn)
@@ -629,7 +637,7 @@ class MainWindow(QMainWindow):
         splitter.setSizes([235, 960, 300])
         self.i18n.bind_widgets(self, skip_text=(self.status, self.event_title, self.event_reason,
                                                self.reference, self.sample_note, self.result_count,
-                                               self.export_note, self.video_meta, self.save_note))
+                                               self.export_note, self.video_meta, self.save_note, self.hoop_btn))
         self.save_note.setText(self.t("项目自动保存"))
         self.refresh_enabled()
 
@@ -643,6 +651,24 @@ class MainWindow(QMainWindow):
 
     def mode(self):
         return "player" if self.player_mode.isChecked() else "all"
+
+    def open_help(self):
+        self.pause()
+        while True:
+            dialog = HelpDialog(self.preferences, self)
+            try:
+                result = dialog.exec_()
+            finally:
+                dialog.deleteLater()
+            if result != HelpDialog.START_TOUR:
+                break
+            tour = GuidedTour(self)
+            try:
+                result = tour.exec_()
+            finally:
+                tour.deleteLater()
+            if result != GuidedTour.TEXT_HELP:
+                break
 
     def open_settings(self):
         if self.job:
@@ -668,15 +694,19 @@ class MainWindow(QMainWindow):
         self.status.setText(self.t("设置已保存"))
 
     def apply_language(self):
+        calibration_status = self.project is not None and self.status.text() == self.t(self.missing_calibration_message())
         self.i18n.apply(self.preferences["language"])
+        self.refresh_calibration_labels()
         self.refresh_seek_buttons()
         self.refresh_reference()
         self.refresh_events()
         event = next((e for e in self.project["events"] if e["id"] == self.active_event), None) if self.project else None
         self.event_title.setText(self.t("进球时间 {time}", time=timestamp(event["time"])) if event else self.t("未选择片段"))
-        self.event_reason.setText(self.t(event.get("player_reason", event.get("reason", ""))) if event else "")
+        self.event_reason.setText(self.event_reason_text(event) if event else "")
         if not self.project:
             self.video_meta.setText(self.t("未选择素材"))
+        elif calibration_status:
+            self.status.setText(self.t(self.missing_calibration_message()))
         self.canvas.update()
 
     def refresh_seek_buttons(self):
@@ -862,11 +892,14 @@ class MainWindow(QMainWindow):
             self.source_title.setText(self.t("视频预览"))
             self.source_title.setToolTip(path)
             self.video_meta.setText(f"{info['width']} × {info['height']} · {info['fps']:.2f} fps\n{timestamp(info['duration'])} · {info['size']/1024**3:.1f} GB")
-            self.canvas.set_rects([h["rect"] for h in self.project["hoops"]])
+            self.refresh_calibration_labels()
+            self.canvas.set_rects([h["rect"] for h in self.current_hoops()])
             self.seek(self.project.get("position", 0))
             self.refresh_reference()
             self.refresh_events()
             self.status.setText(self.t("已载入项目" if self.project["events"] else "就绪"))
+            if not self.current_hoops():
+                self.status.setText(self.t(self.missing_calibration_message()))
         except Exception as error:
             self.updating = False
             self.reset_video()
@@ -906,13 +939,15 @@ class MainWindow(QMainWindow):
         self.canvas.update()
 
     def refresh_preview_regions(self):
-        if not self.project:
+        if not self.project or calibration_kind(self.sensitivity.currentData()) != "region":
             self.preview_regions.reset()
             self.canvas.region_colors = {}
         else:
             self.canvas.region_colors = self.preview_regions.update(
-                self.position, self.frame, self.project["hoops"], self.project["events"],
+                self.position, self.frame, self.current_hoops(), self.project["events"],
                 live=self.play_timer.isActive())
+            if self.preview_regions.error and self.job is None:
+                self.status.setText(self.t("预览篮球复核已停止：{error}", error=self.t(self.preview_regions.error)))
         self.canvas.update()
 
     def pause(self):
@@ -959,7 +994,7 @@ class MainWindow(QMainWindow):
         self.canvas.mode = mode
         self.canvas.setCursor(Qt.CrossCursor)
         region = self.sensitivity.currentData() == "region"
-        self.status.setText(self.t(("框选篮球触发区域" if region else "框选篮圈及篮网") if mode == "hoop" else "框选目标球员全身"))
+        self.status.setText(self.t(("框选篮板区域" if region else "框选篮圈及篮网") if mode == "hoop" else "框选目标球员全身"))
 
     def selection_finished(self, mode, rect):
         if not self.project or self.job is not None:
@@ -970,10 +1005,12 @@ class MainWindow(QMainWindow):
             self.status.setText(self.t(str(error)))
             return
         if mode == "hoop":
-            self.project["hoops"].append({"id": uid(), "rect": rect})
-            self.canvas.set_rects([h["rect"] for h in self.project["hoops"]], selected=len(self.project["hoops"])-1)
+            kind = calibration_kind(self.sensitivity.currentData())
+            self.project["hoops"].append({"id": uid(), "rect": rect, "kind": kind})
+            hoops = self.current_hoops()
+            self.canvas.set_rects([h["rect"] for h in hoops], selected=len(hoops)-1)
             self.refresh_preview_regions()
-            self.status.setText(self.t("已标定 {count} 个篮筐", count=len(self.project["hoops"])))
+            self.status.setText(self.t("已标定 {count} 个篮板区域" if kind == "region" else "已标定 {count} 个篮圈", count=len(hoops)))
         else:
             x, y, w, h = rect
             path = DATA / "samples" / f"{uid()}.jpg"
@@ -987,7 +1024,7 @@ class MainWindow(QMainWindow):
     def hoop_rect_changed(self, index, rect):
         if not self.project:
             return
-        hoops = self.project["hoops"]
+        hoops = self.current_hoops()
         if self.job is not None or not 0 <= index < len(hoops):
             self.canvas.set_rects([h["rect"] for h in hoops])
             return
@@ -1006,15 +1043,18 @@ class MainWindow(QMainWindow):
         self.preview_regions.reset()
         self.refresh_preview_regions()
         self.persist()
-        self.status.setText(self.t("已更新篮筐 {number} 的区域", number=index+1))
+        self.status.setText(self.t("已更新篮板区域 {number}" if calibration_kind(self.sensitivity.currentData()) == "region" else "已更新篮圈 {number}", number=index+1))
 
     def remove_hoop(self):
-        if self.project and self.project["hoops"] and self.job is None:
-            self.project["hoops"].pop()
-            self.canvas.set_rects([h["rect"] for h in self.project["hoops"]])
+        hoops = self.current_hoops()
+        if hoops and self.job is None:
+            self.project["hoops"].remove(hoops[-1])
+            self.canvas.set_rects([h["rect"] for h in hoops[:-1]])
             self.refresh_preview_regions()
             self.persist()
             self.refresh_enabled()
+            if not self.current_hoops():
+                self.status.setText(self.t(self.missing_calibration_message()))
 
     def import_reference(self):
         if not self.project:
@@ -1057,7 +1097,10 @@ class MainWindow(QMainWindow):
         self.refresh_enabled()
 
     def test_scan(self):
-        if self.project:
+        if self.project and self.job is None:
+            if not self.current_hoops():
+                self.status.setText(self.t(self.missing_calibration_message()))
+                return
             self.range_start.setValue(self.position)
             self.range_end.setValue(min(self.position+60, self.project["info"]["duration"]))
             self.scan()
@@ -1080,13 +1123,36 @@ class MainWindow(QMainWindow):
                 self.updating = was_updating
         self.refresh_export_count()
 
+    def current_hoops(self):
+        return active_hoops(self.project, self.sensitivity.currentData()) if self.project else []
+
+    def missing_calibration_message(self):
+        return "请先框选篮板区域" if calibration_kind(self.sensitivity.currentData()) == "region" else "请先框选篮圈与篮网"
+
+    def refresh_calibration_labels(self):
+        region = calibration_kind(self.sensitivity.currentData()) == "region"
+        self.hoop_btn.setText(self.t("框选篮板区域" if region else "框选篮圈及篮网"))
+        self.hoop_btn.setToolTip(self.t("篮板区域与篮圈独立标定；进入区域不代表确认进球" if region else "单独框选篮圈与篮网；不会复用篮板区域"))
+        self.undo_hoop_btn.setToolTip(self.t("删除最后一个篮板区域" if region else "删除最后一个篮圈"))
+        self.canvas.calibration_kind = "region" if region else "rim"
+
     def detection_mode_changed(self):
         if self.project and not self.updating and not self.job:
+            self.pause()
             self.project["settings"]["sensitivity"] = self.sensitivity.currentData()
+            self.refresh_calibration_labels()
+            self.canvas.set_rects([h["rect"] for h in self.current_hoops()])
+            self.preview_regions.reset()
+            self.refresh_preview_regions()
+            self.refresh_enabled()
+            self.status.setText(self.t("就绪" if self.current_hoops() else self.missing_calibration_message()))
             self.persist()
 
     def scan(self):
         if not self.project or self.job:
+            return
+        if not self.current_hoops():
+            self.status.setText(self.t(self.missing_calibration_message()))
             return
         start, end = self.range_start.value(), self.range_end.value()
         if end <= start:
@@ -1100,6 +1166,7 @@ class MainWindow(QMainWindow):
         self.project["settings"]["detect_upward"] = self.preferences["detect_upward"]
         # 固定本次任务的数据和参数，后台扫描不直接读取界面正在维护的项目对象。
         snapshot = copy.deepcopy(self.project)
+        snapshot["hoops"] = active_hoops(snapshot)
         self.project["scan"] = {"start": start, "end": end, "complete": False}
         self.persist()
 
@@ -1116,16 +1183,13 @@ class MainWindow(QMainWindow):
         self.start_job(task, done, self.add_found_event)
 
     def add_found_event(self, event):
-        # 同一篮筐的相近记录按方向去重，防止先向上、后向下的两次穿越相互覆盖。
-        previous = next((e for e in self.project["events"] if e["hoop"] == event["hoop"]
-                         and e.get("direction", "down") == event.get("direction", "down")
-                         and abs(e["time"]-event["time"]) < 1.5), None)
+        previous = matching_candidate(self.project["events"], event)
         if previous is None:
             self.project["events"].append(event)
             self.project["events"].sort(key=lambda e: e["time"])
         else:
             # 重扫只更新检测证据，保留人工确认的状态、球员归属及片段边界。
-            for key in ("evidence", "trajectory", "reason", "hoop_rect", "direction"):
+            for key in ("evidence", "trajectory", "reason", "hoop_rect", "hoop_kind", "direction", "ball_score", "verification"):
                 if key in event:
                     previous[key] = event[key]
         self.persist()
@@ -1239,6 +1303,20 @@ class MainWindow(QMainWindow):
         self.only_target.blockSignals(blocked)
         self.refresh_events()
 
+    def event_reason_text(self, event):
+        lines = []
+        if event.get("direction") == "region":
+            if event.get("verification") == "ball-track-v1":
+                lines.append(self.t("球体模型已确认；进入区域不代表确认进球"))
+            elif event.get("verification") == "trajectory-review-v1":
+                lines.append(self.t("球体模型不确定，轨迹保留待复核"))
+                lines.append(self.t("默认不勾选导出"))
+        for key in ("reason", "player_reason"):
+            reason = event.get(key)
+            if reason and self.t(reason) not in lines:
+                lines.append(self.t(reason))
+        return "\n".join(lines)
+
     def refresh_events(self):
         if not hasattr(self, "table"):
             return
@@ -1263,12 +1341,15 @@ class MainWindow(QMainWindow):
             check.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
             check.setCheckState(Qt.Checked if event["selected"] else Qt.Unchecked)
             check.setData(Qt.UserRole, event["id"])
+            check.setToolTip(self.event_reason_text(event))
             self.table.setItem(row, 0, check)
             direction = {"down": "从上向下", "up": "从下向上", "region": "区域触发"}.get(event.get("direction"), "未标注")
+            if event.get("direction") == "region":
+                direction = {"ball-track-v1": "进入（已验球）", "trajectory-review-v1": "进入（待复核）"}.get(event.get("verification"), direction)
             values = (timestamp(event["time"]), goal_labels[event["goal"]], player_labels[event["player"]], str(event["evidence"]), direction)
             for col, text in enumerate(values, 1):
                 cell = QTableWidgetItem(self.t(text))
-                cell.setToolTip(self.t(event.get("player_reason", event.get("reason", ""))))
+                cell.setToolTip(self.event_reason_text(event))
                 if col == 2 and event["goal"] == "pending":
                     cell.setForeground(QColor("#a56b13"))
                 if col == 3 and event["player"] in ("target", "likely"):
@@ -1297,7 +1378,7 @@ class MainWindow(QMainWindow):
         for value, title in choices.items():
             editor.addItem(self.t(title), value)
         editor.setCurrentIndex(editor.findData(event[field]))
-        editor.setToolTip(editor.currentText())
+        editor.setToolTip("\n".join(part for part in (editor.currentText(), self.event_reason_text(event)) if part))
         editor.setContextMenuPolicy(Qt.CustomContextMenu)
         editor.customContextMenuRequested.connect(self.candidate_editor_context_menu)
         values = tuple(choices)
@@ -1351,7 +1432,7 @@ class MainWindow(QMainWindow):
         self.active_event = ident
         self.updating = True
         self.event_title.setText(self.t("进球时间 {time}", time=timestamp(event["time"])))
-        self.event_reason.setText(self.t(event.get("player_reason", event.get("reason", ""))))
+        self.event_reason.setText(self.event_reason_text(event))
         self.goal_combo.setCurrentIndex(self.goal_combo.findData(event["goal"]))
         self.person_combo.setCurrentIndex(self.person_combo.findData(event["player"]))
         start, end = clip_range(event, self.project["info"]["duration"], self.preferences["export_before"], self.preferences["export_after"])
@@ -1404,10 +1485,16 @@ class MainWindow(QMainWindow):
         self.refresh_events()
 
     def manual_event(self):
-        if not self.project or not self.project["hoops"]:
+        if not self.project or self.job:
             return
-        event = {"id": uid(), "time": round(self.position, 3), "hoop": self.project["hoops"][0]["id"],
-                 "hoop_rect": self.project["hoops"][0]["rect"],
+        hoops = self.current_hoops()
+        if not hoops:
+            self.status.setText(self.t(self.missing_calibration_message()))
+            return
+        index = self.canvas.active_rect
+        hoop = hoops[index] if index is not None and 0 <= index < len(hoops) else hoops[0]
+        event = {"id": uid(), "time": round(self.position, 3), "hoop": hoop["id"],
+                 "hoop_rect": list(hoop["rect"]), "hoop_kind": hoop.get("kind", "region"),
                  "evidence": 100, "goal": "made", "player": "target" if self.mode() == "player" else "unknown",
                  "player_manual": self.mode() == "player", "selected": True, "reason": "手动标记"}
         self.project["events"].append(event)
@@ -1568,9 +1655,13 @@ class MainWindow(QMainWindow):
                        self.undo_hoop_btn, self.range_start, self.range_end, self.sensitivity, self.all_mode, self.player_mode,
                        self.table, self.manual_btn, self.check_all, self.check_none):
             widget.setEnabled(available or (self.project is None and widget in (self.files, self.open_btn)))
-        self.scan_btn.setEnabled(available and bool(self.project and self.project["hoops"]))
+        calibrated = bool(self.current_hoops())
+        self.scan_btn.setEnabled(available and calibrated)
         self.test_btn.setEnabled(self.scan_btn.isEnabled())
-        self.manual_btn.setEnabled(available and bool(self.project and self.project["hoops"]))
+        self.manual_btn.setEnabled(available and calibrated)
+        self.undo_hoop_btn.setEnabled(available and calibrated)
+        for widget in (self.scan_btn, self.test_btn, self.manual_btn):
+            widget.setToolTip(self.t(self.missing_calibration_message()) if self.project and not calibrated else "")
         self.classify_btn.setEnabled(available and bool(self.project and self.project["samples"] and self.project["events"] and self.project["hoops"]))
         self.clear_events_btn.setEnabled(available and bool(self.project and self.project["events"]))
         self.reset_filters_btn.setEnabled(available and bool(self.candidate_view.filters or (self.mode() == "player" and self.only_target.isChecked())))
@@ -1605,6 +1696,7 @@ class MainWindow(QMainWindow):
             return
         self.persist()
         self.pause()
+        self.preview_regions.close()
         if self.capture:
             self.capture.release()
         event.accept()

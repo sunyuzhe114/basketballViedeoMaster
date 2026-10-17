@@ -9,6 +9,20 @@ from basketball_master.media import Cancelled
 from basketball_master.region import RegionDetector, RegionTracker
 
 
+class AcceptBallVerifier:
+    """Isolate motion tests from semantic model accuracy; model tests are separate."""
+    def ensure_ready(self):
+        pass
+
+    def verify(self, samples):
+        return .8 if len(samples) >= 2 else 0
+
+
+@pytest.fixture(autouse=True)
+def stub_scan_verifier(monkeypatch):
+    monkeypatch.setattr(detection, "BallVerifier", AcceptBallVerifier)
+
+
 def ball(x, y, radius=5):
     return (x, y, radius, .8)
 
@@ -21,7 +35,11 @@ def ball(x, y, radius=5):
 ])
 def test_region_accepts_any_entry_direction(points):
     tracker = RegionTracker([100, 100, 50, 50])
-    events = [event for i, point in enumerate(points) if (event := tracker.update(i*.05, [ball(*point)]))]
+    events = []
+    for i, point in enumerate(points):
+        if event := tracker.update(i*.05, [ball(*point)]):
+            tracker.accept(event, i*.05)
+            events.append(event)
     assert len(events) == 1
     assert events[0]["direction"] == "region"
     assert tracker.last_hit > 0
@@ -29,8 +47,9 @@ def test_region_accepts_any_entry_direction(points):
 
 def test_partial_ball_overlap_counts_without_center_entering():
     tracker = RegionTracker([100, 100, 50, 50])
-    assert tracker.update(0, [ball(85, 120)]) is None
-    assert tracker.update(.05, [ball(96, 120)]) is not None
+    assert tracker.update(0, [ball(76, 120)]) is None
+    assert tracker.update(.05, [ball(86, 120)]) is None
+    assert tracker.update(.1, [ball(96, 120)]) is not None
 
 
 def test_outside_stationary_and_single_frame_objects_do_not_trigger():
@@ -44,19 +63,25 @@ def test_outside_stationary_and_single_frame_objects_do_not_trigger():
         assert tracker.update(1+index*.05, [ball(65+index, 120)]) is None
 
 
-def test_region_presence_and_quick_reentry_are_deduplicated():
+def test_region_presence_is_deduplicated_but_separate_reentry_is_allowed():
     tracker = RegionTracker([100, 100, 50, 50])
     events = []
     for index in range(100):
-        event = tracker.update(index*.05, [ball(115+index%10, 120)])
+        phase = index % 20
+        event = tracker.update(index*.05, [ball(110+min(phase, 20-phase)*2, 120)])
         if event:
             events.append(event)
+            tracker.accept(event, index*.05)
     assert len(events) == 1
-    tracker.update(6, [ball(85, 120)])
-    assert tracker.update(6.05, [ball(96, 120)]) is not None
-    tracker.update(6.1, [])
-    tracker.update(6.2, [ball(85, 120)])
-    assert tracker.update(6.25, [ball(96, 120)]) is None
+    tracker.update(6, [ball(76, 120)])
+    tracker.update(6.05, [ball(86, 120)])
+    event = tracker.update(6.1, [ball(96, 120)])
+    assert event is not None
+    tracker.accept(event, 6.1)
+    tracker.update(6.15, [])
+    tracker.update(6.2, [ball(76, 120)])
+    tracker.update(6.25, [ball(86, 120)])
+    assert tracker.update(6.3, [ball(96, 120)]) is not None
 
 
 def synthetic_frames(detector):
@@ -71,10 +96,12 @@ def synthetic_frames(detector):
 
 
 def test_region_real_motion_pipeline_and_global_coordinates():
-    detector = RegionDetector([100, 80, 60, 60], 300, 200)
+    detector = RegionDetector([100, 80, 60, 60], 300, 200, verifier=AcceptBallVerifier())
     events = [event for t, frame in synthetic_frames(detector) if (event := detector.update(t, frame))]
     assert len(events) == 1
     assert events[0]["direction"] == "region"
+    assert events[0]["verification"] == "ball-track-v1"
+    assert events[0]["ball_score"] == .8
     assert 90 <= events[0]["trajectory"][-1][1] <= 110
     assert events[0]["trajectory"][-1][2] == pytest.approx(110, abs=1)
 
