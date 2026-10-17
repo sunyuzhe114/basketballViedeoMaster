@@ -5,7 +5,7 @@ import weakref
 
 from PyQt5 import sip
 from PyQt5.QtCore import QSignalBlocker
-from PyQt5.QtWidgets import QCheckBox, QComboBox, QLabel, QPushButton, QTableWidget, QToolButton, QWidget
+from PyQt5.QtWidgets import QCheckBox, QComboBox, QLabel, QMessageBox, QPushButton, QTableWidget, QToolButton, QWidget
 
 
 EN = {
@@ -46,6 +46,13 @@ EN = {
     "用于标准/严格模式；区域触发模式不限制运动方向": "Used in standard/strict modes; region mode accepts either direction",
     "导出设置": "Export settings", "原始分辨率": "Original resolution", "进球前": "Before shot", "进球后": "After shot",
     "分辨率": "Resolution", "保存": "Save", "取消": "Cancel", "恢复默认": "Reset defaults",
+    "是": "Yes", "否": "No",
+    "未勾选": "Unchecked", "已勾选": "Checked", "升序": "Ascending", "降序": "Descending",
+    "下限": "Minimum", "上限": "Maximum", "应用": "Apply",
+    "下限不能大于上限": "Minimum cannot exceed maximum",
+    "清除此列筛选": "Clear column filter", "清除全部筛选": "Clear all filters",
+    "筛选和排序：{column}": "Filter and sort: {column}",
+    "候选进球 · {count}/{total}": "Candidates · {count}/{total}",
     "导出集锦筛选": "Export filters", "已勾选片段": "Checked clips", "全部候选片段": "All candidates",
     "导出范围": "Export scope", "进球球员": "Shooter", "选择保存目录": "Choose folder",
     "尚未打开视频": "No video open", "候选出手人": "Possible shooter",
@@ -146,6 +153,20 @@ class Localizer:
                 if match:
                     return target.format(**match.groupdict())
         return text
+
+    def question(self, parent, title, text, buttons=QMessageBox.Yes | QMessageBox.No,
+                 default_button=QMessageBox.NoButton):
+        dialog = QMessageBox(QMessageBox.Question, title, text, buttons, parent)
+        # 保留标准按钮的返回值与键盘行为，只按软件语言覆盖 Qt 默认文案。
+        for standard, source in ((QMessageBox.Yes, "是"), (QMessageBox.No, "否")):
+            button = dialog.button(standard)
+            if button is not None:
+                button.setText(self.tr(source))
+        dialog.setDefaultButton(default_button)
+        try:
+            return dialog.exec_()
+        finally:
+            dialog.deleteLater()
 
     def _bind(self, owner, setter, source, *args):
         if source in EN:

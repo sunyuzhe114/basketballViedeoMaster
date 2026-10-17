@@ -4,9 +4,9 @@ import re
 from string import Formatter
 
 import pytest
-from PyQt5.QtCore import QCoreApplication, QEvent, QPoint, Qt
+from PyQt5.QtCore import QCoreApplication, QEvent, QPoint, Qt, QTimer
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QAbstractButton, QComboBox, QLabel, QMenu
+from PyQt5.QtWidgets import QApplication, QAbstractButton, QComboBox, QLabel, QMenu, QMessageBox
 
 from basketball_master import app as desktop
 from basketball_master import project as storage
@@ -52,6 +52,66 @@ def test_localizers_are_independent_and_template_fields_match():
         source_fields = {field for _, field, _, _ in Formatter().parse(source) if field is not None}
         target_fields = {field for _, field, _, _ in Formatter().parse(translated) if field is not None}
         assert source_fields == target_fields
+
+
+@pytest.mark.parametrize("action", ["remove_video", "clear_videos", "clear_samples", "delete_event", "clear_events"])
+def test_confirmation_buttons_follow_language_and_cancel(window, monkeypatch, action):
+    dialogs = []
+
+    def cancel_dialog(dialog):
+        dialogs.append((dialog.button(QMessageBox.Yes).text(), dialog.button(QMessageBox.No).text()))
+        if action != "clear_samples":
+            assert dialog.defaultButton() is dialog.button(QMessageBox.No)
+        return QMessageBox.No
+
+    monkeypatch.setattr(QMessageBox, "exec_", cancel_dialog)
+    for language, labels in [("zh_CN", ("是", "否")), ("en", ("Yes", "No")), ("zh_CN", ("是", "否"))]:
+        window.preferences["language"] = language
+        window.apply_language()
+        before = copy.deepcopy(window.project)
+        args = [window.files.item(0)] if action == "remove_video" else ["first"] if action == "delete_event" else []
+        getattr(window, action)(*args)
+        assert dialogs and dialogs[-1] == labels
+        assert window.project == before
+        assert window.files.count() == 2 and window.table.rowCount() == 3
+    assert len(dialogs) == 3
+
+
+@pytest.mark.parametrize("language,labels", [("zh_CN", ("是", "否")), ("en", ("Yes", "No"))])
+@pytest.mark.parametrize("action", ["yes", "no", "enter", "escape", "close"])
+def test_localized_question_keeps_standard_button_behavior(qapp, monkeypatch, language, labels, action):
+    original_exec = QMessageBox.exec_
+    observed = []
+    screenshots = []
+
+    def interact(dialog):
+        observed.append((dialog.button(QMessageBox.Yes).text(), dialog.button(QMessageBox.No).text()))
+
+        def finish():
+            if action == "no":
+                path = storage.ROOT.parent / "work" / f"confirmation_{language}.png"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                screenshots.append(dialog.grab().save(str(path)))
+            if action in ("yes", "no"):
+                dialog.button(QMessageBox.Yes if action == "yes" else QMessageBox.No).click()
+            elif action == "close":
+                dialog.close()
+            else:
+                QTest.keyClick(dialog, Qt.Key_Return if action == "enter" else Qt.Key_Escape)
+
+        QTimer.singleShot(0, finish)
+        return original_exec(dialog)
+
+    monkeypatch.setattr(QMessageBox, "exec_", interact)
+    localizer = Localizer(language)
+    result = localizer.question(None, localizer.tr("删除候选进球"),
+                                localizer.tr("删除 {time} 的候选进球记录？\n原视频和已导出的文件都会保留。", time="00:00:20"),
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+    assert observed == [labels]
+    assert result == (QMessageBox.Yes if action == "yes" else QMessageBox.No)
+    if action == "no":
+        assert screenshots == [True]
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def test_english_menus_status_errors_and_export_dialog(window, monkeypatch):

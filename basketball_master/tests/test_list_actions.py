@@ -43,7 +43,7 @@ def window(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(desktop, "probe", lambda path: {
         "duration": 100, "width": 160, "height": 90, "fps": 30, "size": 15,
     })
-    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.Yes)
+    monkeypatch.setattr(QMessageBox, "exec_", lambda *args: QMessageBox.Yes)
     sources = [tmp_path / "first.mp4", tmp_path / "second.mp4"]
     for source in sources:
         source.write_bytes(b"source sentinel")
@@ -152,7 +152,7 @@ def test_remove_video_keeps_correct_active_project(window, active_row, remove_ro
 
 @pytest.mark.parametrize("action", ["clear_videos", "remove_video", "clear_events"])
 def test_cancelled_clear_preserves_all_records(window, monkeypatch, action):
-    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.No)
+    monkeypatch.setattr(QMessageBox, "exec_", lambda *args: QMessageBox.No)
     before = copy.deepcopy(window.project)
     args = [window.files.item(0)] if action == "remove_video" else []
     getattr(window, action)(*args)
@@ -300,11 +300,11 @@ def test_delete_candidate_uses_identity_under_filter(window):
 
 
 def test_cancelled_or_busy_candidate_deletion_keeps_records(window, monkeypatch):
-    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.No)
+    monkeypatch.setattr(QMessageBox, "exec_", lambda *args: QMessageBox.No)
     before = copy.deepcopy(window.project)
     window.delete_event("first")
     assert window.project == before
-    monkeypatch.setattr(QMessageBox, "question", lambda *args: pytest.fail("Busy deletion opened confirmation"))
+    monkeypatch.setattr(QMessageBox, "exec_", lambda *args: pytest.fail("Busy deletion opened confirmation"))
     window.job = object()
     try:
         window.delete_event("first")

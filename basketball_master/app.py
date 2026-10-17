@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 import cv2
-from PyQt5.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import QPoint, QPointF, QRectF, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QColor, QDesktopServices, QFont, QImage, QKeySequence, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QComboBox,
@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
 
+from .candidate_table import COLUMNS, CandidateHeader, CandidateView, ColumnFilterDialog
 from .detection import PlayerAnalyzer, scan_goals
 from .export_dialog import ExportFilterDialog
 from .exporter import GOAL_STATES, PLAYER_STATES, export_highlights, filter_export_events
@@ -345,6 +346,7 @@ class MainWindow(QMainWindow):
         self.position = 0
         self.job = None
         self.active_event = None
+        self.candidate_view = CandidateView()
         # 程序回填控件时屏蔽编辑回调，防止刷新界面被误当成用户修改。
         self.updating = False
         self.preview_end = None
@@ -491,6 +493,8 @@ class MainWindow(QMainWindow):
         results_bar = QHBoxLayout()
         self.result_count = label("候选进球 · 0")
         results_bar.addWidget(self.result_count)
+        self.reset_filters_btn = self.icon_button(QStyle.SP_DialogResetButton, "清除全部筛选", self.clear_candidate_filters)
+        results_bar.addWidget(self.reset_filters_btn)
         results_bar.addStretch()
         self.only_target = QCheckBox("仅目标 / 疑似目标")
         self.only_target.stateChanged.connect(self.refresh_events)
@@ -507,7 +511,12 @@ class MainWindow(QMainWindow):
         results_bar.addWidget(self.clear_events_btn)
         work.addLayout(results_bar)
         self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["导出", "进球时间", "进球状态", "球员归属", "证据分", "触发方式"])
+        self.candidate_header = CandidateHeader(self.table)
+        self.table.setHorizontalHeader(self.candidate_header)
+        self.table.setHorizontalHeaderLabels([title for field, title in COLUMNS])
+        self.candidate_header.filterRequested.connect(self.open_candidate_filter)
+        self.table.horizontalScrollBar().valueChanged.connect(self.candidate_header.position_buttons)
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -740,7 +749,7 @@ class MainWindow(QMainWindow):
     def remove_video(self, item):
         if self.job or item is None or self.files.row(item) < 0:
             return
-        choice = QMessageBox.question(
+        choice = self.i18n.question(
             self, self.t("移除视频"), self.t("从素材列表移除“{name}”？\n原视频文件和已保存的分析记录都会保留。", name=item.text()),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
@@ -767,7 +776,7 @@ class MainWindow(QMainWindow):
     def clear_videos(self):
         if self.job or not self.files.count():
             return
-        choice = QMessageBox.question(
+        choice = self.i18n.question(
             self, self.t("清空视频列表"), self.t("清空素材列表中的 {count} 个视频？\n原视频文件和已保存的分析记录都会保留，重新导入后可继续使用。", count=self.files.count()),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
@@ -803,6 +812,7 @@ class MainWindow(QMainWindow):
 
     def reset_video(self):
         self.pause()
+        self.candidate_view = CandidateView()
         if self.capture:
             self.capture.release()
         self.capture = self.frame = self.project = None
@@ -1022,7 +1032,7 @@ class MainWindow(QMainWindow):
 
     def clear_samples(self):
         if self.project:
-            if self.project["events"] and QMessageBox.question(self, self.t("更换目标球员"), self.t("清空球员样本并重置球员归属？进球标记与片段时间会保留。"), QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            if self.project["events"] and self.i18n.question(self, self.t("更换目标球员"), self.t("清空球员样本并重置球员归属？进球标记与片段时间会保留。"), QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
                 return
             self.project["samples"] = []
             for event in self.project["events"]:
@@ -1192,8 +1202,42 @@ class MainWindow(QMainWindow):
     def visible_events(self):
         events = self.project["events"] if self.project else []
         if self.mode() == "player" and self.only_target.isChecked():
-            return [e for e in events if e["player"] in ("target", "likely")]
-        return events
+            events = [e for e in events if e["player"] in ("target", "likely")]
+        return self.candidate_view.apply(events)
+
+    def open_candidate_filter(self, column):
+        if self.job or not self.project or column not in range(len(COLUMNS)):
+            self.candidate_header.sync(self.candidate_view, self.i18n)
+            return
+        maximum = self.project["info"]["duration"] if column == 1 else 100
+        dialog = ColumnFilterDialog(column, self.candidate_view, self.i18n, maximum, self)
+        dialog.adjustSize()
+        button = self.candidate_header.buttons[column]
+        anchor = button.mapToGlobal(QPoint(0, button.height()))
+        bounds = self.screen().availableGeometry()
+        dialog.move(max(bounds.left(), min(anchor.x(), bounds.right()-dialog.width()+1)),
+                    max(bounds.top(), min(anchor.y(), bounds.bottom()-dialog.height()+1)))
+        try:
+            if dialog.exec_() != QDialog.Accepted:
+                return
+            if dialog.apply_filter:
+                self.candidate_view.set_filter(column, dialog.filter_value)
+            if dialog.sort_order is not None:
+                self.candidate_view.sort_column = column
+                self.candidate_view.descending = dialog.sort_order
+        finally:
+            dialog.deleteLater()
+            self.candidate_header.sync(self.candidate_view, self.i18n)
+        self.refresh_events()
+
+    def clear_candidate_filters(self):
+        if self.job:
+            return
+        self.candidate_view.filters.clear()
+        blocked = self.only_target.blockSignals(True)
+        self.only_target.setChecked(False)
+        self.only_target.blockSignals(blocked)
+        self.refresh_events()
 
     def refresh_events(self):
         if not hasattr(self, "table"):
@@ -1234,7 +1278,12 @@ class MainWindow(QMainWindow):
             self.table.setCellWidget(row, 3, self.event_state_editor(event, "player", player_labels))
             if event["id"] == self.active_event:
                 self.table.selectRow(row)
-        self.result_count.setText(self.t("候选进球 · {count}", count=len(events)))
+        filtered = self.candidate_view.filters or (self.mode() == "player" and self.only_target.isChecked())
+        if filtered:
+            self.result_count.setText(self.t("候选进球 · {count}/{total}", count=len(events), total=len(self.project["events"]) if self.project else 0))
+        else:
+            self.result_count.setText(self.t("候选进球 · {count}", count=len(events)))
+        self.candidate_header.sync(self.candidate_view, self.i18n)
         self.updating = False
         self.refresh_export_count()
         self.refresh_enabled()
@@ -1292,7 +1341,7 @@ class MainWindow(QMainWindow):
         event = next(e for e in self.project["events"] if e["id"] == item.data(Qt.UserRole))
         event["selected"] = item.checkState() == Qt.Checked
         self.persist()
-        self.refresh_export_count()
+        self.refresh_events()
 
     def event_clicked(self, row, col):
         if not self.project:
@@ -1426,7 +1475,7 @@ class MainWindow(QMainWindow):
         event = next((event for event in self.project["events"] if event["id"] == ident), None)
         if event is None:
             return
-        choice = QMessageBox.question(
+        choice = self.i18n.question(
             self, self.t("删除候选进球"), self.t("删除 {time} 的候选进球记录？\n原视频和已导出的文件都会保留。", time=timestamp(event["time"])),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
@@ -1443,7 +1492,7 @@ class MainWindow(QMainWindow):
     def clear_events(self):
         if self.job or not self.project or not self.project["events"]:
             return
-        choice = QMessageBox.question(
+        choice = self.i18n.question(
             self, self.t("清空进球列表"), self.t("清空当前视频的全部 {count} 条候选进球？\n包括筛选隐藏的记录及人工标记，清空后需要重新分析或补记。\n篮筐标定、球员样本、原视频和已导出的文件都会保留。", count=len(self.project["events"])),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
@@ -1524,6 +1573,7 @@ class MainWindow(QMainWindow):
         self.manual_btn.setEnabled(available and bool(self.project and self.project["hoops"]))
         self.classify_btn.setEnabled(available and bool(self.project and self.project["samples"] and self.project["events"] and self.project["hoops"]))
         self.clear_events_btn.setEnabled(available and bool(self.project and self.project["events"]))
+        self.reset_filters_btn.setEnabled(available and bool(self.candidate_view.filters or (self.mode() == "player" and self.only_target.isChecked())))
         self.stop_btn.setEnabled(self.job is not None)
         for widget in (self.goal_combo, self.person_combo, self.clip_start, self.clip_end, self.replay_btn):
             widget.setEnabled(available and self.active_event is not None)
