@@ -1,0 +1,5 @@
+PyQt5>=5.15,<6
+numpy>=1.26,<3
+opencv-python>=4.10,<5
+ultralytics>=8.4.0,<9
+lap>=0.5

@@ -1,0 +1,61 @@
+# Python environments and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Local projects, player photos, settings, models, and runtime paths
+/basketball_master/data/
+/basketball_master/models/
+/basketball_master/python-path.txt
+/blue_score_config.json
+
+# Original footage and generated media
+*.[mM][pP]4
+*.[mM][oO][vV]
+*.[aA][vV][iI]
+*.[mM][kK][vV]
+*.[mM]4[vV]
+*.[wW][eE][bB][mM]
+*.[mM][tT][sS]
+*.[mM]2[tT][sS]
+/work/
+/runs/
+/*集锦*/
+/篮球剪辑大师测试导出/
+/target_blue_player_goal_30s_clips/
+
+# Downloaded weights and compiled output
+*.pt
+*.pth
+*.onnx
+*.engine
+*.exe
+*.dll
+*.pdb
+/build/
+/dist/
+/bin/
+/obj/
+
+# Internal working notes and machine-specific files
+/docs/superpowers/
+.idea/
+.vscode/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.log
+Thumbs.db
+Desktop.ini
+.DS_Store
