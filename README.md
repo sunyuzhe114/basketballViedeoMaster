@@ -34,6 +34,8 @@ GPU 非必需；CPU 也可运行，但处理速度可能较慢。首次安装依
 
 本仓库提供源码，不包含独立安装包。`basketball_master/launcher.cs` 是可选 EXE 启动器的源码；使用上面的 BAT 或 Python 命令无需编译它。
 
+BAT 启动器会优先读取安装时保存的 `basketball_master/python-path.txt`，自动将 `pythonw.exe` 切换为同目录的 `python.exe`，以便显示报错；路径失效时再查找本地虚拟环境、Python Launcher、PATH 和常见 Python / Anaconda 安装目录。它会验证 Python 3.10+ 并跳过 Windows 商店快捷入口，不必为此修改系统的应用执行别名。找不到真实 Python 时会保留窗口并提示处理方法；新安装环境请从 Python / Anaconda 终端运行 `setup.bat` 安装依赖。
+
 ## 使用
 
 导入视频，框选监测区域，设置分析范围，开始分析；复核候选并选择要导出的片段。指定球员模式可从照片或视频任意时间的画面添加球员样本，不要求球员出现在第一帧。
